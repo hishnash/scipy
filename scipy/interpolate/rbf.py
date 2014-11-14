@@ -51,8 +51,9 @@ from numpy import (sqrt, log, asarray, newaxis, all, dot, exp, eye,
 from scipy import linalg
 from scipy.lib.six import callable, get_method_function, \
      get_function_code
-
-__all__ = ['Rbf']
+from numbapro import guvectorize
+from math import sqrt as math_sqrt
+__all__ = ['Rbf', 'euclidean_norm']
 
 
 class Rbf(object):
@@ -229,3 +230,69 @@ class Rbf(object):
         xa = asarray([a.flatten() for a in args], dtype=float_)
         r = self._call_norm(xa, self.xi)
         return dot(self._function(r), self.nodes).reshape(shp)
+
+
+@guvectorize(['void(float32[:,:,:], float32[:,:,:], float32[:,:])'],
+             '(d, m, p),(d, p, n)->(m,n)', target='cpu')
+def _cpu_euclidean_norm(A, B, C):
+    """
+    Compute the euclidean norm with a numpy guvectorize function on the CPU
+
+    (d, m, p),(d, p, n)->(m,n)
+    """
+    d, m, p = A.shape
+    d, p, n = B.shape
+    for i in range(m): # for each input vector
+        for j in range(n): # for rbf point
+            C[i, j] = 0
+            for k in range(d):
+                C[i, j] += (A[k, i, 0] - B[k, 0, j])**2
+            C[i, j] = math_sqrt(C[i, j])
+
+
+@guvectorize(['void(float32[:,:,:], float32[:,:,:], float32[:,:])'],
+             '(d, m, p),(d, p, n)->(m,n)', target='gpu')
+def _gpu_euclidean_norm(A, B, C):
+    """
+    Compute the euclidean norm with a numpy guvectorize function on the GPU
+
+    (d, m, p),(d, p, n)->(m,n)
+    """
+    d, m, p = A.shape
+    d, p, n = B.shape
+    for i in range(m):
+        for j in range(n):
+            C[i, j] = 0
+            for k in range(d):
+                C[i, j] += (A[k, i, 0] - B[k, 0, j])**2
+            C[i, j] = math_sqrt(C[i, j])
+
+
+def euclidean_norm(gpu=False):
+    """
+    Get the euclidean_norm function.
+
+    This function uses much less memory for large RBF operations than
+    the standard euclidean norm.
+
+    Parameters
+    ----------
+    *gpu : Boolean
+        Use GPU to compute. (default False)
+
+    Returns a euclidean_norm
+    """
+    def __cpu_euclidean_norm(x1, x2):
+        if len(x1.shape) != 3 or len(x2.shape) != 3:
+            return sqrt(((x1 - x2)**2).sum(axis=0))
+        return _cpu_euclidean_norm(x1.astype('float32'),
+                                   x2.astype('float32'))
+
+    def __gpu_euclidean_norm(x1, x2):
+        if len(x1.shape) != 3 or len(x2.shape) != 3:
+            return sqrt(((x1 - x2)**2).sum(axis=0))
+        return _gpu_euclidean_norm(x1.astype('float32'),
+                                   x2.astype('float32'))
+    if gpu:
+        return __gpu_euclidean_norm
+    return __cpu_euclidean_norm
